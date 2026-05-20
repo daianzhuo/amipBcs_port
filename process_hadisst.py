@@ -433,8 +433,14 @@ def process_variable(
         hi = vals + 0.5 * d_ext[1:]
         return np.stack([lo, hi], axis=1)
 
-    lat_bnds = _make_1d_bnds(lat_coord)
-    lon_bnds = _make_1d_bnds(lon_coord)
+    def _get_or_make_bnds(coord, ds):
+        bnds_name = coord.attrs.get("bounds")
+        if bnds_name and bnds_name in ds:
+            return ds[bnds_name].values
+        return _make_1d_bnds(coord)
+
+    lat_bnds = _get_or_make_bnds(lat_coord, da)
+    lon_bnds = _get_or_make_bnds(lon_coord, da)
 
     history_str = (
         f"Created {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} "
