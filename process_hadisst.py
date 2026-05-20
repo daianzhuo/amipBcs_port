@@ -31,9 +31,9 @@ Usage
       [--outdir     ./output]
 
 Output files (CF-compliant netCDF-4):
-  tos_HadISST_187001-202512.nc        monthly-mean SST (K)
+  tos_HadISST_187001-202512.nc        monthly-mean SST (degC)
   siconc_HadISST_187001-202512.nc     monthly-mean SIC (%)
-  tosbcs_HadISST_187001-202512.nc     mid-month diddled SST (K)
+  tosbcs_HadISST_187001-202512.nc     mid-month diddled SST (degC)
   siconcbcs_HadISST_187001-202512.nc  mid-month diddled SIC (%)
 
 Dependencies: numpy, scipy, xarray, cftime  (all in base conda)
@@ -45,7 +45,6 @@ import datetime
 import gzip
 import os
 import shutil
-import sys
 import tempfile
 import warnings
 
@@ -57,7 +56,6 @@ from scipy.linalg import solve_banded
 # ---------------------------------------------------------------------------
 # Physical constants and defaults
 # ---------------------------------------------------------------------------
-KELVIN      = 273.15        # 0 °C in Kelvin
 SST_MIN_C   = -1.8          # Minimum physically plausible SST (°C)
 SST_MAX_C   = 45.0          # Maximum physically plausible SST (°C)
 SIC_MIN_PCT = 0.0           # Minimum SIC (%)
@@ -536,8 +534,7 @@ def process_variable(
               var_id, long_name_obs, std_name_obs, "obs", extra_attrs=extra)
 
     # bcs: mid-month diddled values; time bounds span the same calendar month
-    bcs_bnds = np.stack([t_starts, t_ends], axis=1)
-    _write_nc(midmonth,  mid_times, bcs_bnds,
+    _write_nc(midmonth,  mid_times, time_bnds_vals,
               bcs_id, long_name_bcs, std_name_bcs, "bcs", extra_attrs=extra)
 
 
