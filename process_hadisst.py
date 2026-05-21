@@ -285,6 +285,64 @@ def diddle(
 
 
 # ---------------------------------------------------------------------------
+# Land-fill: propagate coastal values into land / missing cells
+# ---------------------------------------------------------------------------
+
+def fill_void(data: np.ndarray) -> np.ndarray:
+    """
+    Fill NaN (land/missing) cells by spreading neighbouring valid values
+    inward, alternating between zonal (lon) and meridional (lat) sweeps
+    until every cell has a value.
+
+    Faithful numpy translation of fillVoid() from
+    PCMDI/amipbcs/pcmdiAmipBcs/pcmdiAmipBcsFx.py (Taylor et al. 2000).
+
+    Not physically meaningful — prevents GCMs from crashing when a boundary-
+    condition file contains no valid SST/SIC in a particular grid cell.
+
+    Parameters
+    ----------
+    data : ndarray, shape (N_time, N_lat, N_lon)
+        Input array with NaN at land/missing grid cells.
+
+    Returns
+    -------
+    ndarray, same shape, with all NaN cells replaced by propagated values.
+    """
+    out   = data.copy()
+    valid = ~np.isnan(out)                   # True where ocean / valid
+
+    for i in range(out.shape[0]):
+        flag  = valid[i]                     # (N_lat, N_lon) view — updated in-place
+        slab  = out[i]                       # (N_lat, N_lon) view — updated in-place
+        n_prev = 0                           # triggers dim=1 (zonal) on first pass
+
+        while not flag.all():
+            n_now = int(flag.sum())
+            # If the previous sweep made no progress, switch axis
+            dim = 0 if n_prev == n_now else 1   # 0 = meridional, 1 = zonal
+
+            s1 = [slice(None), slice(None)]
+            s2 = [slice(None), slice(None)]
+            s1[dim] = slice(0, -1)
+            s2[dim] = slice(1, None)
+
+            # Fill NaN from the + direction (eastward / southward source)
+            rep = ~flag[tuple(s1)] & flag[tuple(s2)]
+            slab[tuple(s1)][rep] = slab[tuple(s2)][rep]
+            flag[tuple(s1)][rep] = True
+
+            # Fill NaN from the − direction (westward / northward source)
+            rep = ~flag[tuple(s2)] & flag[tuple(s1)]
+            slab[tuple(s2)][rep] = slab[tuple(s1)][rep]
+            flag[tuple(s2)][rep] = True
+
+            n_prev = n_now
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Variable-specific processing
 # ---------------------------------------------------------------------------
 
@@ -299,6 +357,7 @@ def process_variable(
     Process one HadISST variable (SST or SIC):
       1. Clean fill values / apply physical limits
       2. Convert units to CMIP convention
+      2b. Fill void: propagate coastal values into land/missing cells
       3. Diddle to produce mid-month values
       4. Write both obs (monthly mean) and bcs (mid-month) netCDF files
 
@@ -357,36 +416,30 @@ def process_variable(
         bcs_id    = "siconcbcs"
         data_proc = data_pct
 
+    # ── 2b. Fill void: propagate coastal values into land/missing cells ──────
+    print(f"  Filling void cells …")
+    data_filled = fill_void(data_proc)   # (N_time, N_lat, N_lon), NaN-free
+
     # ── 3. Diddle: solve for mid-month values ─────────────────────────────
     print(f"  Diddling {var_id} ({N_time} months × {N_lat}×{N_lon} grid) …")
 
-    # Flatten to (time, space); replace NaN (land) with 0 for the solver,
-    # then mask out after.
-    flat = data_proc.reshape(N_time, N_space)
-    land_flat = land_mask.reshape(N_space)
-    ocean_pts = ~land_flat
+    # Diddle ocean columns only (filled land values go straight to output)
+    flat      = data_filled.reshape(N_time, N_space)
+    ocean_pts = ~land_mask.reshape(N_space)
 
-    # Solve only for ocean columns (avoids propagating fill values)
     if ocean_pts.any():
-        ocean_data = flat[:, ocean_pts]
-        # Some coastal / sea-ice points may still have isolated NaNs;
-        # fill those with the time-mean of that point before diddling.
-        col_means = np.nanmean(ocean_data, axis=0)
-        # Some columns (e.g. semi-permanent sea-ice) are all-NaN; fall back to 0
-        col_means = np.where(np.isnan(col_means), 0.0, col_means)
-        nan_mask  = np.isnan(ocean_data)
-        ocean_data = np.where(nan_mask, col_means[np.newaxis, :], ocean_data)
-        midmonth_ocean = diddle(ocean_data, ndays, vmin, vmax)
+        # fill_void guarantees no NaN in ocean columns
+        midmonth_ocean = diddle(flat[:, ocean_pts], ndays, vmin, vmax)
     else:
         raise RuntimeError("No ocean points found in the data!")
 
-    # Reconstruct full grid
-    midmonth_flat = np.full((N_time, N_space), OUTPUT_FILL, dtype=np.float32)
+    # Reconstruct full grid: ocean → diddled values, land → fill_void values
+    midmonth_flat = flat.astype(np.float32).copy()
     midmonth_flat[:, ocean_pts] = midmonth_ocean.astype(np.float32)
     midmonth = midmonth_flat.reshape(N_time, N_lat, N_lon)
 
-    # Also reconstruct obs on full grid (NaN -> fill)
-    obs_full = np.where(np.isnan(data_proc), OUTPUT_FILL, data_proc).astype(np.float32)
+    # Obs: monthly means with land cells filled (not OUTPUT_FILL)
+    obs_full = data_filled.astype(np.float32)
 
     # ── 4. Build time coordinates ─────────────────────────────────────────
     # Mid-month time: exact centroid = month_start + ndays/2
